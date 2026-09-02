@@ -1,0 +1,26 @@
+[project]
+name = "revisor-pptx"
+version = "0.1.0"
+description = "Corrector ortográfico/gramatical por lotes de archivos .pptx en español"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "python-pptx>=1.0.0",
+    "language-tool-python>=2.7.1",
+]
+
+[project.scripts]
+revisor-pptx = "revisor_pptx.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["revisor_pptx"]
