@@ -1,7 +1,8 @@
 """revisor-pptx CLI entry point and orchestration.
 
-Pipeline per design: check Java -> init LanguageTool -> copy to corregidos/
--> extract -> review -> filter -> apply -> report. Originals never modified.
+Pipeline per design: copy to corregidos/ -> extract -> review -> apply ->
+report. Originals never modified. Runs fully local (spaCy + pyspellchecker),
+no Java or network required.
 """
 
 from __future__ import annotations
@@ -11,35 +12,56 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .aplicar import apply_corrections, filter_corrections
+from .aplicar import apply_corrections
 from .copy_ppts import copy_directory
 from .extract_text import extract_pptx
 from .reporte import ChangeDetail, FileReport, SlideReport, generate_report
-from .revisar import init_languagetool, review_text
+from .revisar import review_text
 
 
-def _build_report(filename: str, applied: list) -> FileReport:
-    """Accumulate applied corrections into a FileReport structure."""
+def _build_report(filename: str, applied: list, pending: list) -> FileReport:
+    """Accumulate applied and pending corrections into a FileReport."""
     report = FileReport(filename=filename)
-    # Group applied corrections by slide index.
-    slides: dict[int, list] = {}
+
+    def to_detail(corr, corrected: str) -> ChangeDetail:
+        return ChangeDetail(
+            original=corr.original,
+            corrected=corrected,
+            rule=corr.rule_id,
+            context=corr.context,
+            alternatives=list(corr.replacements),
+        )
+
+    # Applied corrections: safe, deterministic grammar fixes.
     for corr in applied:
-        slides.setdefault(corr.slide_idx, []).append(corr)
-    for slide_idx in sorted(slides):
-        slide_report = SlideReport(slide_idx=slide_idx)
-        for corr in slides[slide_idx]:
-            slide_report.changes.append(
-                ChangeDetail(
-                    original=corr.original,
-                    corrected=_best_replacement(corr),
-                    rule=corr.rule_id,
-                )
-            )
-        report.slides.append(slide_report)
+        _append_change(report, corr.slide_idx, to_detail(corr, _best_replacement(corr)))
+    # Pending corrections: flagged for human review (no auto-correction harm).
+    for corr in pending:
+        _append_change(report, corr.slide_idx, to_detail(corr, ""))
     return report
 
 
-def run_dir(dir_path: Path, prefer_local: bool = True) -> int:
+def _append_change(report, slide_idx: int, detail: ChangeDetail) -> None:
+    for sr in report.slides:
+        if sr.slide_idx == slide_idx:
+            sr.changes.append(detail)
+            return
+    sr = SlideReport(slide_idx=slide_idx)
+    sr.changes.append(detail)
+    report.slides.append(sr)
+
+
+def _is_safe_to_autoapply(corr) -> bool:
+    """Only deterministic, harm-free grammar fixes are auto-applied.
+
+    Orthography suggestions (SPACY_OOV) and non-deterministic agreement
+    findings (AGREE_DET/AGREE_AMOD) are flagged for review instead of being
+    blindly written into the document.
+    """
+    return bool(corr.rule_id == "AGREE_SUBJCOP" and corr.replacements)
+
+
+def run_dir(dir_path: Path) -> int:
     """Process a directory of .pptx files. Returns process exit code."""
     if not dir_path.is_dir():
         print(f"❌ {dir_path} no es un directorio válido")
@@ -57,20 +79,13 @@ def run_dir(dir_path: Path, prefer_local: bool = True) -> int:
     dest = dir_path / "corregidos"
     copies = copy_directory(dir_path, dest)
 
-    tool, source = init_languagetool(prefer_local=prefer_local)
-    if tool is None:
-        print(
-            "❌ LanguageTool no disponible (instale Java o verifique la conexión). "
-            "Los archivos quedan copiados en corregidos/ sin corrección."
-        )
-        reports = [FileReport(filename=c.name) for c in copies]
-        (dest / "reporte.md").write_text(generate_report(reports), encoding="utf-8")
+    try:
+        # Force engine warm-up so a missing spaCy model fails loudly up front.
+        review_text([], lang="es")
+    except (ImportError, OSError) as exc:
+        print(f"❌ Motor de corrección no disponible: {exc}")
+        print("Instale spacy y descargue el modelo: python -m spacy download es_core_news_lg")
         return 2
-
-    if source == "cloud":
-        print(
-            "⚠ Java no encontrado. Usando API pública de LanguageTool (puede ser más lento)"
-        )
 
     all_reports: list[FileReport] = []
 
@@ -83,12 +98,17 @@ def run_dir(dir_path: Path, prefer_local: bool = True) -> int:
             continue
 
         corr = review_text(slides, lang="es")
-        kept = filter_corrections(corr)
-        applied = apply_corrections(copy, slides, kept)
+        # Split into safe auto-applicable fixes vs pending human-review flags.
+        to_apply = [c for c in corr if _is_safe_to_autoapply(c)]
+        pending = [c for c in corr if not _is_safe_to_autoapply(c)]
+        applied = apply_corrections(copy, slides, to_apply)
 
-        report = _build_report(copy.name, applied)
+        report = _build_report(copy.name, applied, pending)
         all_reports.append(report)
-        print(f"✓ {copy.name}: {len(applied)} corrección(es)")
+        print(
+            f"✓ {copy.name}: {len(applied)} corregida(s), "
+            f"{len(pending)} pendiente(s) de revisión"
+        )
 
     report_path = dest / "reporte.md"
     report_path.write_text(generate_report(all_reports), encoding="utf-8")
@@ -110,16 +130,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("dir", help="Directorio con los archivos .pptx a corregir")
     parser.add_argument(
-        "--no-local",
-        action="store_true",
-        help="No intentar el servidor local de LanguageTool (usar solo la API pública)",
-    )
-    parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
     args = parser.parse_args(argv)
 
-    return run_dir(Path(args.dir), prefer_local=not args.no_local)
+    return run_dir(Path(args.dir))
 
 
 if __name__ == "__main__":
