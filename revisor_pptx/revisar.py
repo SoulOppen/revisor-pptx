@@ -21,6 +21,7 @@ import re
 from dataclasses import dataclass
 
 import requests
+from wordfreq import zipf_frequency
 
 _API_URL = "https://api.languagetool.org/v2/check"
 _HTTP_TIMEOUT = 30
@@ -30,6 +31,15 @@ _RETRY_BACKOFF = 2.0  # seconds to wait on HTTP 429 (rate limit)
 # A token is "numeric" when it has digits and no alphabetic characters:
 # covers figures like "$1.200.000", "12%", "5.000.000", "+8%", "-3%".
 _LETTERS_RE = re.compile(r"[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]")
+
+# When a match offers several plausible replacements, LanguageTool ranks them by
+# corpus frequency, not by paragraph context. To resolve cases like "titlo" →
+# "título" (not "tillo"), we prefer the most-used word via ``wordfreq`` and only
+# re-check the sentence (an extra API call) when the top candidates are close in
+# frequency.
+_CONTEXT_CANDIDATES = 4
+# Zipf-frequency gap above which the top candidate wins outright (no re-check).
+_FREQ_GAP = 0.5
 
 
 @dataclass
@@ -79,6 +89,65 @@ def _is_numeric(text: str) -> bool:
     return bool(re.search(r"\d", text)) and not _LETTERS_RE.search(text)
 
 
+def _word_frequency(word: str) -> float:
+    """Zipf frequency of ``word`` in Spanish (0 means unknown/rare).
+
+    LanguageTool ranks alternatives by corpus frequency but does it *unstable*
+    across calls and can surface rare-but-valid words (``tillo``) before common
+    ones (``título``). ``wordfreq`` gives us a deterministic, locally-computed
+    frequency to break those ties the way a human would.
+    """
+    try:
+        return zipf_frequency(word, "es", wordlist="best", minimum=0.0)
+    except Exception:  # noqa: BLE001 - never let a frequency lookup break a fix
+        return 0.0
+
+
+def _rank_by_context(
+    seg_text: str, off: int, length: int, replacements: list[str],
+) -> list[str]:
+    """Reorder ``replacements`` so the contextually best option comes first.
+
+    ``wordfreq`` (selected locally, no API calls) is the primary signal: among
+    plausible replacements the word most used in real Spanish is usually the
+    right fix (``título`` beats ``tillo``/``tilo``). The replacement-zone API
+    re-check is used as a *tiebreaker* only when the top frequencies are close,
+    so unambiguous fixes cost no extra API calls and batching stays fast.
+
+    The winner moves to the front of the list (so :mod:`aplicar` writes it);
+    every leftover option stays in the report.
+    """
+    # Prefer higher frequency; break frequency ties by the API's original order.
+    ordered = sorted(
+        enumerate(replacements),
+        key=lambda p: (-_word_frequency(p[1]), p[0]),
+    )
+    top = [(i, alt) for i, alt in ordered[:_CONTEXT_CANDIDATES]]
+    best_i, best = top[0]
+
+    # If the top candidate is clearly more common than the runner-up, stop now.
+    freq_best = _word_frequency(best)
+    freq_next = _word_frequency(top[1][1]) if len(top) > 1 else -1.0
+    if freq_best - freq_next >= _FREQ_GAP:
+        return [best] + [r for r in replacements if r != best]
+
+    # Ambiguous (close frequencies): confirm with the sentence context in the
+    # replacement zone, keeping the minimum-cost candidate.
+    def zone_cost(alt: str) -> int:
+        candidate_text = seg_text[:off] + alt + seg_text[off + length :]
+        zs, ze = off, off + len(alt)
+        return len(
+            [m for m in _http_check(candidate_text) if zs <= m["offset"] < ze]
+        )
+
+    scored = [
+        (zone_cost(alt), -_word_frequency(alt), idx, alt)
+        for idx, alt in top
+    ]
+    chosen = min(scored)
+    return [chosen[3]] + [r for r in replacements if r != chosen[3]]
+
+
 def _segment_corrections(slide_idx: int, shape_idx: int, segment_idx: int,
                          seg) -> list[Correction]:
     """Proofread one segment (paragraph/cell/notes) via a single request.
@@ -101,6 +170,11 @@ def _segment_corrections(slide_idx: int, shape_idx: int, segment_idx: int,
         if _is_numeric(original):
             continue  # never flag/suggest inside a figure
         replacements = [r["value"] for r in match.get("replacements", [])]
+        # Disambiguate via context when several options are plausible.
+        if len(replacements) >= 2:
+            replacements = _rank_by_context(
+                seg.text, off_in_seg, length, replacements
+            )
         raw_rule = match.get("rule", {})
         corrs.append(
             Correction(

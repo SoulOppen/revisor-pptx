@@ -13,7 +13,7 @@ from .extract_text import SlideText
 from .revisar import Correction
 
 # Issue types we actively fix.
-_INCLUDE_ISSUES = {"misspelling", "grammar", "typo", "typos"}
+_INCLUDE_ISSUES = {"misspelling", "grammar", "typo", "typos", "inconsistency"}
 # Issue types that are never applied automatically.
 _EXCLUDE_ISSUES = {"style", "whitespace", "casing"}
 

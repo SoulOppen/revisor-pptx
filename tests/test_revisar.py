@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from revisor_pptx.extract_text import ShapeText, SlideText, TextSegment
-from revisor_pptx.revisar import review_text
+from revisor_pptx.revisar import _rank_by_context, review_text
 
 
 def _seg(text: str, offset: int = 0, source: str = "shape") -> TextSegment:
@@ -159,4 +159,62 @@ def test_review_keeps_replacement_for_two_words_joined(monkeypatch):
     assert len(corrs) == 1
     assert corrs[0].original == "piezacla"
     assert corrs[0].replacements == ["pieza clave"]
+
+
+def test_rank_by_context_picks_cleanest_candidate(monkeypatch):
+    # "titlo": LanguageTool ranks "tillo" (a rare but valid word) first, yet the
+    # contextually correct fix is "título". The candidate that yields the
+    # cleanest re-sent text ("el título de la presentación") must win.
+    def fake_check(text, lang="es"):
+        if "título" in text:
+            return []  # the correct candidate is clean in the replacement zone
+        # A wrong candidate ("el tillo ...") is flagged right where it sits
+        # (offset 3, the replacement zone), which must lose.
+        return [_match(offset=3, length=5, value="título")]
+
+    monkeypatch.setattr("revisor_pptx.revisar._http_check", fake_check)
+    ranked = _rank_by_context(
+        "el titlo de la presentación",
+        3, 5,
+        ["tillo", "título", "titulo"],
+    )
+    assert ranked[0] == "título"
+    # The other options are still kept for the report.
+    assert set(ranked[1:]) == {"tillo", "titulo"}
+
+
+def test_review_uses_context_best_as_first_replacement(monkeypatch):
+    # End-to-end through review_text: the match has several alternatives, and
+    # the re-scoring pass must lift "título" (cleanest) to the front so it gets
+    # auto-applied.
+    def fake_check(text, lang="es"):
+        if text == "el titlo del informe":
+            return [{
+                "offset": 3,
+                "length": 5,
+                "message": "posible error",
+                "replacements": [
+                    {"value": "tillo"},
+                    {"value": "título"},
+                    {"value": "titulo"},
+                ],
+                "rule": {"id": "MORFOLOGIK_RULE_ES", "issueType": "misspelling"},
+                "context": {"text": text, "offset": 3, "length": 5},
+            }]
+        if "título" in text:
+            return []
+        return [{
+            "offset": 3, "length": 5, "message": "otro",
+            "replacements": [{"value": "título"}],
+            "rule": {"id": "MORFOLOGIK_RULE_ES", "issueType": "misspelling"},
+            "context": {"text": text, "offset": 3, "length": 5},
+        }]
+
+    monkeypatch.setattr("revisor_pptx.revisar._http_check", fake_check)
+    slide = _slide([_shape([_seg("el titlo del informe")])])
+    corrs = review_text([slide])
+    assert len(corrs) == 1
+    assert corrs[0].original == "titlo"
+    # Contextually correct option is now first (what _best_replacement applies).
+    assert corrs[0].replacements[0] == "título"
 

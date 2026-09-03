@@ -42,6 +42,18 @@ def test_filter_accepts_typo():
     assert filter_corrections([c]) == [c]
 
 
+def test_filter_accepts_inconsistency_agreement():
+    # A determinante/noun agreement mistake (e.g. "del empresa") is a real
+    # grammar error reported by LanguageTool as issueType "inconsistency".
+    c = _corr(
+        issue="inconsistency",
+        replacements=("de la empresa",),
+        original="del empresa",
+        length=11,
+    )
+    assert filter_corrections([c]) == [c]
+
+
 def test_filter_rejects_style():
     c = _corr(issue="style")
     assert filter_corrections([c]) == []

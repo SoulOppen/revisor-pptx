@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .aplicar import apply_corrections, filter_corrections
+from .aplicar import _best_replacement, apply_corrections, filter_corrections
 from .copy_ppts import copy_directory
 from .extract_text import extract_pptx
 from .reporte import ChangeDetail, FileReport, SlideReport, generate_report
@@ -104,13 +104,6 @@ def run_dir(dir_path: Path) -> int:
     report_path.write_text(generate_report(all_reports), encoding="utf-8")
     print(f"\nReporte: {report_path}")
     return 0
-
-
-def _best_replacement(corr) -> str:
-    if not corr.replacements:
-        return ""
-    exact = [r for r in corr.replacements if len(r) == len(corr.original)]
-    return exact[0] if exact else corr.replacements[0]
 
 
 def main(argv: list[str] | None = None) -> int:
