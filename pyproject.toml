@@ -5,10 +5,8 @@ description = "Corrector ortográfico/gramatical por lotes de archivos .pptx en 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "es-core-news-lg",
-    "pyspellchecker>=0.9.0",
     "python-pptx>=1.0.0",
-    "spacy>=3.8.16",
+    "requests>=2.31.0",
 ]
 
 [project.scripts]
@@ -26,6 +24,3 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["revisor_pptx"]
-
-[tool.uv.sources]
-es-core-news-lg = { url = "https://github.com/explosion/spacy-models/releases/download/es_core_news_lg-3.8.0/es_core_news_lg-3.8.0-py3-none-any.whl" }

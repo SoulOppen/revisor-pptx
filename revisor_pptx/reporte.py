@@ -77,12 +77,16 @@ def generate_report(results: list[FileReport]) -> str:
             if applied:
                 lines.append("**Aplicados:**")
                 lines.append("")
-                lines.append("| Original | Corregido | Regla |")
-                lines.append("|---|---|---|")
+                lines.append("| Original | Corregido | Otras opciones | Regla |")
+                lines.append("|---|---|---|---|")
                 for ch in applied:
+                    others = [
+                        a for a in ch.alternatives if a != ch.corrected
+                    ]
+                    others_txt = " · ".join(_md_escape(a) for a in others) or "—"
                     lines.append(
-                        f"| {_md_escape(ch.original)} | {_md_escape(ch.corrected)} "
-                        f"| {_md_escape(ch.rule)} |"
+                        f"| {_md_escape(ch.original)} | **{_md_escape(ch.corrected)}** "
+                        f"| {others_txt} | {_md_escape(ch.rule)} |"
                     )
                 lines.append("")
 

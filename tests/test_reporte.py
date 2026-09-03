@@ -32,7 +32,7 @@ def test_report_single_file_single_slide():
     assert "# Reporte de correcciones" in out
     assert "## a.pptx" in out
     assert "### Diapositiva 123" in out
-    assert "| munod | mundo | M |" in out
+    assert "| munod | **mundo** | — | M |" in out
 
 
 def test_report_multi_file_multi_slide():
@@ -59,8 +59,8 @@ def test_report_multi_file_multi_slide():
     assert "## b.pptx" in out
     assert "### Diapositiva 1" in out
     assert "### Diapositiva 2" in out
-    assert "| un | una | R1 |" in out
-    assert "| errta | errata | R3 |" in out
+    assert "| un | **una** | — | R1 |" in out
+    assert "| errta | **errata** | — | R3 |" in out
     # b.pptx has no slides -> sin correcciones
     assert "sin correcciones" in out
 

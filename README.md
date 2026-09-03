@@ -14,11 +14,15 @@ copia** se corrige. Si algo sale mal, perdés a lo sumo una copia corregida, nun
 ## Requisitos
 
 | Requisito | Detalle |
-|---|---|
+|---|---|---|
 | WSL (Ubuntu) | Entorno recomendado para correr el proyecto |
 | [uv](https://docs.astral.sh/uv/) | Gestor de dependencias y entorno |
 | Python ≥ 3.12 | Gestionado por uv |
-| Java (opcional) | Solo para el servidor local de LanguageTool (ver abajo) |
+| Acceso a internet | La revisión llama a la **API pública de LanguageTool** en la nube |
+
+## Motor de revisión
+
+El corrector usa la **API pública de LanguageTool** (`https://api.languagetool.org/v2/check`) en español, sin Java, sin servidor local ni descargas grandes. Cada forma, celda de tabla y nota del orador se envía por separado a la API; los errores de alta confianza se aplican a la copia y el resto queda listado en el reporte para revisión humana.
 
 ## Instalación
 
@@ -38,7 +42,7 @@ Donde `<directorio>` es la carpeta que contiene los `.pptx` a corregir.
 ### Qué hace cada corrida
 
 1. Copia cada `.pptx` a `<directorio>/corregidos/`.
-2. Revisa el texto (formas, tablas y notas del orador) con LanguageTool en español.
+2. Revisa el texto (formas, tablas y notas del orador) con la API de LanguageTool en español.
 3. Aplica **solo** las correcciones de alta confianza a la copia.
 4. Escribe el reporte en `corregidos/reporte.md` con cada cambio aplicado.
 
@@ -58,14 +62,14 @@ Donde `<directorio>` es la carpeta que contiene los `.pptx` a corregir.
 |---|---|
 | `0` | Proceso correcto (aun sin correcciones) |
 | `1` | Error de argumentos o directorio inválido |
-| `2` | LanguageTool no disponible; los archivos quedan copiados sin corregir |
 
 ## Solución de problemas
 
 | Problema | Qué hacer |
 |---|---|
-| **Java no está instalado** | La herramienta avisa y usa la API pública de LanguageTool en la nube (puede ser más lenta). Para el servidor local, instalá Java: `sudo apt install default-jre` |
-| **Primera ejecución lenta** | La primera vez, el servidor local de LanguageTool se descarga e inicializa. Las siguientes corridas son más rápidas |
+| **Sin acceso a internet / API caída** | La herramienta avisa por archivo y deja la copia sin corregir; no corta el lote |
+| **Muy lento con muchos textos** | La API pública tiene un límite de ~20 solicitudes/minuto; la herramienta reintenta con espera. Procesar lotes chicos o una presentación a la vez ayuda |
+| **Rate limit (429)** | Se reintenta automáticamente con backoff; si persiste, esperá un momento antes de repetir |
 | **I/O lento en `/mnt/c/`** | Trabajar con archivos dentro de WSL (`~/` en lugar de `/mnt/c/...`) es sensiblemente más rápido que sobre el filesystem de Windows |
 
 ## Documentación

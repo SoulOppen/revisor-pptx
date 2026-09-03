@@ -1,7 +1,8 @@
-"""Tests for the spaCy + pyspellchecker proofreading engine.
+"""Tests for the LanguageTool HTTP API proofreading engine.
 
-These exercise ``review_text`` end-to-end and thus load the spaCy
-``es_core_news_lg`` model (a few seconds on first call within a session).
+The API call itself (``_http_check``) is mocked in every test so the suite is
+deterministic and offline. These tests cover the mapping of raw LanguageTool
+``matches`` onto the ``Correction`` contract consumed by :mod:`revisor_pptx.aplicar`.
 """
 
 from __future__ import annotations
@@ -24,64 +25,138 @@ def _shape(segments, shape_idx: int = 10, name: str = "box") -> ShapeText:
     return ShapeText(shape_idx=shape_idx, shape_name=name, segments=segments)
 
 
-def test_review_rejects_non_spanish():
+def _match(offset: int, length: int, value: str, issue: str = "misspelling",
+           rid: str = "MORFOLOGIK_RULE_ES") -> dict:
+    return {
+        "offset": offset,
+        "length": length,
+        "message": "posible error",
+        "replacements": [{"value": value}],
+        "rule": {"id": rid, "issueType": issue},
+        "context": {"text": "ctx", "offset": offset, "length": length},
+    }
+
+
+def _nocheck(text, lang="es"):
+    """Stub ``_http_check`` that returns no matches."""
+    return []
+
+
+def test_review_rejects_non_spanish(monkeypatch):
+    monkeypatch.setattr("revisor_pptx.revisar._http_check", _nocheck)
     slide = _slide([_shape([_seg("hola")])])
     with pytest.raises(ValueError):
         review_text([slide], lang="en")
 
 
-def test_review_detects_misspelling_with_replacement():
+def test_review_detects_misspelling_and_maps_fields(monkeypatch):
+    def fake_check(text, lang="es"):
+        assert text == "hola munod como estas"
+        return [_match(offset=5, length=5, value="mundo")]
+
+    monkeypatch.setattr("revisor_pptx.revisar._http_check", fake_check)
     slide = _slide([_shape([_seg("hola munod como estas")])])
     corrs = review_text([slide])
     assert len(corrs) == 1
     c = corrs[0]
     assert c.original == "munod"
-    assert c.rule_id == "SPACY_OOV"
+    assert c.rule_id == "MORFOLOGIK_RULE_ES"
     assert c.rule_issue == "misspelling"
-    assert "mundo" in c.replacements
+    assert c.replacements == ["mundo"]
     assert c.offset == 5
     assert c.length == 5
     assert c.shape_idx == 10
+    assert c.segment_idx == 0
 
 
-def test_review_offset_accumulates_across_segments():
-    # Second segment has offset 4 (first segment "hola" is length 4).
+def test_review_offset_absolute_within_shape(monkeypatch):
+    # Shape has two segments "hola"(offset 0) and "munod"(offset 4). Each
+    # segment is sent separately; the second returns a match at its own
+    # offset 0, which maps to shape-absolute offset 4.
+    def fake_check(text, lang="es"):
+        if text == "munod":
+            return [_match(offset=0, length=5, value="mundo")]
+        return []
+
+    monkeypatch.setattr("revisor_pptx.revisar._http_check", fake_check)
     slide = _slide([_shape([_seg("hola", 0), _seg("munod", 4)])])
     corrs = review_text([slide])
     assert len(corrs) == 1
     assert corrs[0].original == "munod"
     assert corrs[0].offset == 4
+    assert corrs[0].segment_idx == 1
 
 
-def test_review_clean_text_yields_no_corrections():
+def test_review_clean_text_yields_no_corrections(monkeypatch):
+    monkeypatch.setattr("revisor_pptx.revisar._http_check", _nocheck)
     slide = _slide([_shape([_seg("El proyecto fue un éxito")])])
     corrs = review_text([slide])
     assert corrs == []
 
 
-def test_review_detects_grammar_in_determiner_noun():
-    slide = _slide([_shape([_seg("la casa bonitos")])])
+def test_review_grammar_match_with_issue_type(monkeypatch):
+    def fake_check(text, lang="es"):
+        return [_match(offset=5, length=2, value="son", issue="grammar", rid="ES_CONCORDANCIA")]
+
+    monkeypatch.setattr("revisor_pptx.revisar._http_check", fake_check)
+    slide = _slide([_shape([_seg("Esto es malo")])])
     corrs = review_text([slide])
-    grammar = [c for c in corrs if c.rule_id == "AGREE_AMOD"]
-    assert len(grammar) == 1
-    assert grammar[0].original == "bonitos"
-    assert grammar[0].rule_issue == "grammar"
+    assert len(corrs) == 1
+    assert corrs[0].rule_issue == "grammar"
+    assert corrs[0].rule_id == "ES_CONCORDANCIA"
+    assert corrs[0].original == "es"
 
 
-def test_review_detects_subject_copula_agreement_and_fixes():
-    slide = _slide([_shape([_seg("Esta son malas")])])
-    corrs = review_text([slide])
-    fixes = [c for c in corrs if c.rule_id == "AGREE_SUBJCOP"]
-    assert len(fixes) == 1
-    assert fixes[0].original == "son"
-    assert fixes[0].replacements == ["es"]
-    assert fixes[0].offset == 5
+def test_review_notes_routed_to_shape_minus_one(monkeypatch):
+    def fake_check(text, lang="es"):
+        if text == "nota con munod mal escrito":
+            return [_match(offset=9, length=5, value="mundo")]
+        return []
 
-
-def test_review_notes_typo_routed_to_shape_minus_one():
+    monkeypatch.setattr("revisor_pptx.revisar._http_check", fake_check)
     slide = _slide([_shape([_seg("texto correcto")])], notes="nota con munod mal escrito")
     corrs = review_text([slide])
-    note_typo = [c for c in corrs if c.rule_id == "SPACY_OOV" and c.original == "munod"]
-    assert len(note_typo) == 1
-    assert note_typo[0].shape_idx == -1
-    assert "mundo" in note_typo[0].replacements
+    notes_corr = [c for c in corrs if c.original == "munod"]
+    assert len(notes_corr) == 1
+    assert notes_corr[0].shape_idx == -1
+    assert notes_corr[0].offset == 9
+
+
+def test_review_ignores_numeric_segment_without_calling_api(monkeypatch):
+    # A pure-numeric cell ("$1.200.000") is skipped before any network call.
+    def fail_check(text, lang="es"):
+        raise AssertionError("no API call expected for numeric segments")
+
+    monkeypatch.setattr("revisor_pptx.revisar._http_check", fail_check)
+    slide = _slide([_shape([_seg("$1.200.000", 0)])])
+    corrs = review_text([slide])
+    assert corrs == []
+
+
+def test_review_discards_match_inside_figure_in_mixed_text(monkeypatch):
+    # In "12%" LanguageTool might flag something; it must be dropped.
+    def fake_check(text, lang="es"):
+        assert text == "Crecimiento 12% anual"
+        return [_match(offset=12, length=3, value="12 %")]
+
+    monkeypatch.setattr("revisor_pptx.revisar._http_check", fake_check)
+    slide = _slide([_shape([_seg("Crecimiento 12% anual")])])
+    corrs = review_text([slide])
+    assert corrs == []
+
+
+def test_review_keeps_replacement_for_two_words_joined(monkeypatch):
+    # "LatinoamericaReducir" was a glued-token from glued cells. As its own
+    # segment is no longer glued (per-segment mode), this test asserts a real
+    # joined word ("pieza clave") stays fixable when the API returns a match.
+    def fake_check(text, lang="es"):
+        assert text == "esta es una piezacla"
+        return [_match(offset=12, length=8, value="pieza clave")]
+
+    monkeypatch.setattr("revisor_pptx.revisar._http_check", fake_check)
+    slide = _slide([_shape([_seg("esta es una piezacla")])])
+    corrs = review_text([slide])
+    assert len(corrs) == 1
+    assert corrs[0].original == "piezacla"
+    assert corrs[0].replacements == ["pieza clave"]
+

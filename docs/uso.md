@@ -71,10 +71,10 @@ Se aplicaron **4** correcciones en **2** archivo(s).
 
 ### Diapositiva 1
 
-| Original | Corregido | Regla |
-|---|---|---|
-| munod | mundo | MORFOLOGIK_RULE_ES |
-| una problema | un problema | ... |
+| Original | Corregido | Otras opciones | Regla |
+|---|---|---|---|
+| munod | **mundo** | — | MORFOLOGIK_RULE_ES |
+| una problema | **un problema** | uno | ... |
 ```
 
 ## 4. Comprobar el resultado
@@ -88,8 +88,8 @@ que el texto quedó correcto y que no se perdió formato.
 |---|---|
 | Carpeta vacía o sin `.pptx` | Imprime "No se encontraron archivos .pptx" y sale con código 0 |
 | Archivo `.pptx` corrupto | Se salta ese archivo y continúa el lote |
-| Java no instalado | Usa la API pública de LanguageTool (más lenta), con un aviso |
-| LanguageTool totalmente caído | Copia los archivos sin corregir y sale con código 2 |
+| Sin acceso a internet / API caída | Avisa por archivo y deja la copia sin corregir; no corta el lote |
+| Límite de solicitudes (429) | Reintenta automáticamente con backoff |
 
 ## Consejos
 

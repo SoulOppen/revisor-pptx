@@ -62,14 +62,15 @@ def test_filter_rejects_no_replacements():
     assert filter_corrections([c]) == []
 
 
-def test_filter_rejects_too_many_length_hits():
-    # Multiple replacements, none close-length to original -> reject.
+def test_filter_accepts_multiple_long_replacements():
+    # First (best) replacement is applied even when several long alternatives
+    # exist; the rest are only recorded in the report.
     c = _corr(
         original="hola",
         length=4,
         replacements=("un texto muy largo", "varias palabras"),
     )
-    assert filter_corrections([c]) == []
+    assert filter_corrections([c]) == [c]
 
 
 def test_filter_accepts_close_length_multiple():

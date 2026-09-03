@@ -17,21 +17,15 @@ _INCLUDE_ISSUES = {"misspelling", "grammar", "typo", "typos"}
 # Issue types that are never applied automatically.
 _EXCLUDE_ISSUES = {"style", "whitespace", "casing"}
 
-_LEN_TOLERANCE = 2
-
-
-def _is_close_length(original: str, replacement: str) -> bool:
-    return abs(len(replacement) - len(original)) <= _LEN_TOLERANCE
-
 
 def filter_corrections(
     corrections: Iterable[Correction], replacements_limit: int = 3
 ) -> list[Correction]:
-    """Pure: keep only high-confidence, safe-to-apply corrections.
+    """Pure: keep high-confidence corrections to auto-apply.
 
-    A correction is kept when its rule issue type is one of the actionable ones
-    and its replacement list matches length heuristics (1 exact auto-correct
-    replacement, or up to ``replacements_limit`` close-length options).
+    A correction is applied whenever it is an actionable issue type with at
+    least one replacement. The first (best) replacement is written into the
+    document; any other options are only recorded in the report.
     """
     kept: list[Correction] = []
     for c in corrections:
@@ -45,24 +39,18 @@ def filter_corrections(
         if not replacements:
             continue
 
-        if len(replacements) == 1:
-            # Auto-correct single replacement.
-            kept.append(c)
-            continue
-
-        if len(replacements) <= replacements_limit and any(
-            _is_close_length(c.original, r) for r in replacements
-        ):
-            kept.append(c)
+        kept.append(c)
     return kept
 
 
 def _best_replacement(c: Correction) -> str:
+    """The replacement to write into the document: the first (best) option.
+
+    LanguageTool orders replacements by likelihood, so the first entry is the
+    preferred fix. The remaining options are still recorded in the report.
+    """
     if not c.replacements:
         return ""
-    exact = [r for r in c.replacements if len(r) == len(c.original)]
-    if exact:
-        return exact[0]
     return c.replacements[0]
 
 

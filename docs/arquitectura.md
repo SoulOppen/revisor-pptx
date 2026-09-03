@@ -27,7 +27,7 @@ confianza → aplicar a la copia → generar reporte markdown.
 | `revisor_pptx/main.py` | CLI + orquestación del pipeline | IO |
 | `revisor_pptx/copy_ppts.py` | Copia segura de `.pptx` a `corregidos/` | IO |
 | `revisor_pptx/extract_text.py` | Extracción de texto por slide | Pura + borde IO |
-| `revisor_pptx/revisar.py` | Integración con LanguageTool + lifecycle | IO |
+| `revisor_pptx/revisar.py` | Llamados a la API HTTP de LanguageTool + mapeo de correcciones | IO |
 | `revisor_pptx/aplicar.py` | Filtro de confianza + aplicación de fixes | Pura + borde IO |
 | `revisor_pptx/reporte.py` | Renderizado del reporte markdown | Pura |
 
@@ -44,8 +44,9 @@ lógica de negocio en **funciones puras** fácilmente testeables sin mocks.
 | `generate_report(results)` | Pura | Renderiza markdown a partir de datos |
 | `copy_directory(src, dest)` | Borde IO | Copia `.pptx` (shutil.copy2) |
 | `apply_corrections(path, slides, corrs)` | Borde IO | Reabre la copia y la muta |
-| `review_text(texts, lang)` | Borde IO | Llama a LanguageTool |
-| `init_languagetool()` | Borde IO | Arranca el servidor/first-run download |
+| `review_text(texts, lang)` | Borde IO | Devuelve correcciones de la API HTTP |
+| `_http_check(text, lang)` | Borde IO | POST a `api.languagetool.org/v2/check` con reintentos (429) |
+| `_segment_corrections(...)` | Borde IO | Llama por segmento y descarta cifras/figuras |
 
 ### Tipos de datos puros (`extract_text.py`, `reporte.py`)
 
@@ -60,11 +61,13 @@ lógica de negocio en **funciones puras** fácilmente testeables sin mocks.
 El modo más importante de la herramienta es **reemplazo por segmento/run**, para
 preservar el formato (fuente, negrita, color) de los runs no afectados.
 
-1. `review_text` devuelve `Correction`s con `offset`/`length` relativos al texto
-   concatenado de cada forma.
-2. `filter_corrections` (pura) conserva solo correcciones de alta confianza:
+1. `review_text` consulta la API **por segmento** (cada forma, celda o nota por
+   separado) y devuelve `Correction`s con `offset`/`length` relativos a ese
+   segmento (mapeados al segmento padre).
+2. `filter_corrections` (pura) conserva toda corrección de alta confianza:
    - regla de tipo `misspelling`/`grammar`/`typo`, **y**
-   - una sola reemplazo (auto-correct), o hasta 3 con longitud cercana a la original.
+   - al menos un reemplazo disponible (se aplica la **primera** opción; las demás
+     quedan registradas en el reporte).
    - Excluye siempre `style`, `whitespace` y `casing`.
 3. `apply_corrections` (IO) reabre la copia y, por offset acumulado, localiza el
    run exacto y reemplaza **solo el substring**, conservando el formato del run.
@@ -76,11 +79,13 @@ preservar el formato (fuente, negrita, color) de los runs no afectados.
 > objetos de python-pptx, en lugar de volver a extraer dentro de la función. Es una
 > mejora de eficiencia que no altera el contrato público del pipeline.
 
-## LanguageTool
+## Motor: LanguageTool vía API HTTP
 
-- **Servidor local** (preferido): requiere Java; sin límites de rate ni latencia de red.
-- **Fallback a API pública**: se usa si Java no está disponible.
-- **Lifecycle**: singleton a nivel de módulo, iniciado en `main()` y cerrado con `atexit`.
+- **Solo** la API pública `https://api.languagetool.org/v2/check` (español).
+- **Sin Java, sin servidor local ni descargas** grandes: cero dependencias de runtime.
+- **Reintentos**: ante HTTP 429 (rate limit) se espera con backoff exponencial y se reintenta.
+- **Límite**: la API pública acepta ~20 solicitudes/minuto; los lotes grandes pueden ser lentos.
+- **Seguros de red**: el fracaso de la API por archivo no corta el lote; ese archivo queda copiado sin corregir.
 
 ## Estrategia de testing
 

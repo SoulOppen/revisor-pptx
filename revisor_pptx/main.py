@@ -1,8 +1,9 @@
 """revisor-pptx CLI entry point and orchestration.
 
 Pipeline per design: copy to corregidos/ -> extract -> review -> apply ->
-report. Originals never modified. Runs fully local (spaCy + pyspellchecker),
-no Java or network required.
+report. Originals never modified. The review engine is the public LanguageTool
+HTTP API (no Java, no local model). High-confidence corrections are applied;
+the rest are flagged in the report with context and alternatives.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .aplicar import apply_corrections
+from .aplicar import apply_corrections, filter_corrections
 from .copy_ppts import copy_directory
 from .extract_text import extract_pptx
 from .reporte import ChangeDetail, FileReport, SlideReport, generate_report
@@ -51,16 +52,6 @@ def _append_change(report, slide_idx: int, detail: ChangeDetail) -> None:
     report.slides.append(sr)
 
 
-def _is_safe_to_autoapply(corr) -> bool:
-    """Only deterministic, harm-free grammar fixes are auto-applied.
-
-    Orthography suggestions (SPACY_OOV) and non-deterministic agreement
-    findings (AGREE_DET/AGREE_AMOD) are flagged for review instead of being
-    blindly written into the document.
-    """
-    return bool(corr.rule_id == "AGREE_SUBJCOP" and corr.replacements)
-
-
 def run_dir(dir_path: Path) -> int:
     """Process a directory of .pptx files. Returns process exit code."""
     if not dir_path.is_dir():
@@ -79,14 +70,6 @@ def run_dir(dir_path: Path) -> int:
     dest = dir_path / "corregidos"
     copies = copy_directory(dir_path, dest)
 
-    try:
-        # Force engine warm-up so a missing spaCy model fails loudly up front.
-        review_text([], lang="es")
-    except (ImportError, OSError) as exc:
-        print(f"❌ Motor de corrección no disponible: {exc}")
-        print("Instale spacy y descargue el modelo: python -m spacy download es_core_news_lg")
-        return 2
-
     all_reports: list[FileReport] = []
 
     for copy in copies:
@@ -97,10 +80,17 @@ def run_dir(dir_path: Path) -> int:
             all_reports.append(FileReport(filename=copy.name))
             continue
 
-        corr = review_text(slides, lang="es")
-        # Split into safe auto-applicable fixes vs pending human-review flags.
-        to_apply = [c for c in corr if _is_safe_to_autoapply(c)]
-        pending = [c for c in corr if not _is_safe_to_autoapply(c)]
+        try:
+            corr = review_text(slides, lang="es")
+        except Exception as exc:  # noqa: BLE001 - network/API failure per file
+            print(f"⚠ {copy.name}: error de revisión ({exc})")
+            all_reports.append(FileReport(filename=copy.name))
+            continue
+
+        # Apply only high-confidence corrections; flag the rest for review.
+        to_apply = filter_corrections(corr)
+        applied_set = {id(c) for c in to_apply}
+        pending = [c for c in corr if id(c) not in applied_set]
         applied = apply_corrections(copy, slides, to_apply)
 
         report = _build_report(copy.name, applied, pending)
